@@ -1,14 +1,35 @@
 # VLA-Driven Compliant Robot: Project Plan
 
-> Status: Initial draft (v0.1)
+> Status: Draft v0.2 (split architecture)
 > Last updated: 2026-10-07
+
+## Architecture (new in v0.2)
+
+Because the office PC runs security software and WSL2 cannot provide hard real-time EtherCAT, the system is split across two machines:
+
+| Machine | OS | Role |
+|---------|----|------|
+| **Control PC** (dedicated mini/industrial PC) | Ubuntu LTS + PREEMPT_RT, dedicated NIC | EtherCAT master, ros2_control, kinematics, state estimation, compliance controller, safety limits |
+| **Workstation** (office PC, GPU) | Windows + WSL2 Ubuntu | VLA inference, camera processing, simulation / digital twin, development |
+
+The two machines communicate over ROS2 (DDS) on a wired network link. The fast loop (kHz) stays entirely on the Control PC; only slow, high-level data (images, VLA actions, torque summaries) crosses the network. The robot must stay safe if the network or the VLA node drops out.
+
+```
+Workstation (WSL2)                     Control PC (RT Linux)
+ Camera -> VLA node  --- ROS2/DDS --->  Compliance + position controller
+ Simulator / twin    <-- (wired LAN) -- State, torque feedback
+                                         |  EtherCAT (dedicated NIC)
+                                         v
+                                       Motor drivers / robotic device
+```
 
 ## Assumptions for time estimates
 
 - One engineer working full time (~40 h/week)
-- Hardware (robotic device, EtherCAT motor driver, RGB-D camera, host PC) is already available
+- Hardware (robotic device, EtherCAT motor driver, RGB-D camera, Control PC, workstation with GPU) is available
 - Moderate prior experience with ROS2 and Linux; limited prior experience with EtherCAT real-time and VLA models
 - Estimates are ranges (optimistic to realistic); hardware debugging is the biggest source of slippage
+- IT approves a separate Control PC; if not, see Open questions
 - Each stage ends with a short buffer for documentation and cleanup
 
 ## Summary
@@ -19,31 +40,36 @@
 | 1 | Position control | 1-2 weeks | 0 |
 | 2 | Kinematics and state estimation (ROS2) | 2-3 weeks | 1 |
 | 3 | Vision setup | 1-2 weeks | 0 (can run parallel to 1-2) |
-| 4 | VLA integration | 3-5 weeks | 2, 3 |
+| 4 | VLA integration (incl. cross-machine networking) | 4-6 weeks | 2, 3 |
 | 5 | Dynamic compliance | 3-4 weeks | 4 |
 | 6 | System validation | 2-3 weeks | 5 |
 | 7 | Optional: digital twin and simulator | 2-4 weeks | 2 (can start earlier) |
-| | **Core total (0-6)** | **13-21 weeks** | |
-| | **With optional (0-7)** | **15-25 weeks** | |
+| | **Core total (0-6)** | **14-22 weeks** | |
+| | **With optional (0-7)** | **16-26 weeks** | |
 
-Stage 3 is independent of stages 1-2, so with a second person (or by interleaving) the core timeline could shrink by 1-2 weeks.
+Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and DDS tuning). Stage 3 is independent of stages 1-2, so interleaving or a second person could shrink the timeline by 1-2 weeks.
 
 ---
 
 ## Stage 0: Communication setup (1-2 weeks)
 
-- [ ] Set up host PC
+- [ ] Set up Control PC
   - Install Ubuntu LTS with a PREEMPT_RT kernel
   - Isolate CPU cores, set CPU governor to performance, disable power saving
-  - Dedicated NIC for EtherCAT
+  - Dedicated NIC for EtherCAT (no other traffic on it)
+  - Second NIC (or port) for the link to the workstation
 - [ ] Configure real-time EtherCAT communication
   - Choose a master (IgH EtherCAT Master, SOEM, or ros2_control EtherCAT driver)
   - Scan the bus, confirm slaves are detected and reach OP state
   - Measure cycle time jitter (e.g. cyclictest, target < 50 us at 1 kHz)
+- [ ] Set up workstation
+  - Enable WSL2 with Ubuntu, NVIDIA GPU driver + CUDA in WSL2
+  - Install ROS2 (same distro as Control PC)
+  - Confirm with IT which tools are allowed (usbipd-win, WSL networking mode)
 
-**Done when:** the driver stays in OPERATIONAL state at the target cycle rate with stable jitter for 1+ hour.
+**Done when:** the driver stays in OPERATIONAL state at the target cycle rate with stable jitter for 1+ hour, and the workstation has a working ROS2 + GPU environment.
 
-**Risks:** RT kernel and NIC driver compatibility; ESI/PDO mapping mismatches with the motor driver.
+**Risks:** RT kernel and NIC driver compatibility; ESI/PDO mapping mismatches with the motor driver; corporate policy blocking WSL2 features.
 
 ---
 
@@ -63,7 +89,7 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 
 ## Stage 2: Kinematics and state estimation, ROS2 (2-3 weeks)
 
-- [ ] Connect host PC to ROS2 to motor driver via EtherCAT (ros2_control hardware interface)
+- [ ] Connect Control PC to ROS2 to motor driver via EtherCAT (ros2_control hardware interface)
 - [ ] Control robotic device via ROS2 (controllers, joint command and state topics)
 - [ ] Calculate state estimation, forward kinematics, and inverse kinematics
   - Write the URDF and verify against the real device
@@ -78,6 +104,9 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 
 ## Stage 3: Vision setup (1-2 weeks)
 
+- [ ] Decide where the camera connects
+  - Option A: workstation via usbipd-win (images stay next to the VLA, less network load)
+  - Option B: Control PC, streaming compressed images over the LAN (use if USB passthrough is blocked by IT)
 - [ ] Set up camera (RGB-D)
 - [ ] Camera calibration
   - Intrinsics and depth alignment
@@ -86,23 +115,29 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 
 **Done when:** a known object's position in the camera frame converts to the correct robot-frame position.
 
-**Risks:** Calibration accuracy; USB bandwidth; frame rate and timestamp sync with the robot.
+**Risks:** Calibration accuracy; USB passthrough stability and bandwidth in WSL2; frame rate and timestamp sync with the robot.
 
 ---
 
-## Stage 4: VLA integration (3-5 weeks)
+## Stage 4: VLA integration (4-6 weeks)
 
+- [ ] Cross-machine ROS2 networking (new)
+  - Wired link between workstation and Control PC; WSL2 mirrored networking mode or bridged setup
+  - Matching ROS_DOMAIN_ID, DDS choice (Cyclone DDS or Fast DDS) and discovery config; consider Zenoh if multicast is blocked
+  - Time sync (chrony or PTP) so images, torque, and actions share timestamps
+  - Measure round-trip latency and packet loss; define behavior on link loss
 - [ ] Deploy a VLA model into ROS2
   - Pick a model and check GPU/VRAM requirements and inference latency
   - Wrap inference as a ROS2 node (observation in, action out)
 - [ ] Integrate the whole system in ROS2 (robotic device + camera + VLA + controller)
   - Define action space (joint deltas, end-effector poses, or targets)
-  - Rate matching: VLA is slow (a few Hz) versus controller (kHz); add interpolation or action chunking
+  - Rate matching: VLA is slow (a few Hz) versus controller (kHz); add interpolation or action chunking on the Control PC
+  - Watchdog: robot holds or safe-stops if VLA actions stop arriving
   - Launch files, parameter configs, logging
 
-**Done when:** a language instruction produces robot motion end to end, with measured latency recorded.
+**Done when:** a language instruction produces robot motion end to end across both machines, with measured latency recorded and link-loss behavior tested.
 
-**Risks:** Model fit to your robot (embodiment gap, may need fine-tuning); inference latency; action safety filtering.
+**Risks:** DDS discovery issues across WSL2/NAT or corporate firewall; model fit to your robot (embodiment gap, may need fine-tuning); inference latency; action safety filtering.
 
 ---
 
@@ -110,12 +145,12 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 
 - [ ] Map VLA semantic output to dynamic driver
   - Impedance/admittance parameters (stiffness, damping) as VLA or task-level output
-  - Implement the compliance controller (impedance or admittance)
+  - Implement the compliance controller (impedance or admittance) on the Control PC, not across the network
 - [ ] Pass interaction torque back into the VLA observation space
   - Torque estimation (current-based or force/torque sensor) and filtering
-  - Add it to the observation vector and time-align with images
+  - Downsample and send to the workstation; time-align with images
 
-**Done when:** the arm yields to external force in a controlled way, and torque data appears in the VLA observations.
+**Done when:** the arm yields to external force in a controlled way, even if the VLA node is stalled, and torque data appears in the VLA observations.
 
 **Risks:** Stability under contact; torque estimate quality without a dedicated sensor; the VLA may need retraining to use torque input.
 
@@ -123,11 +158,12 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 
 ## Stage 6: System validation (2-3 weeks)
 
-- [ ] Add virtual boundary limits to the controller (workspace, velocity, torque, joint limits)
+- [ ] Add virtual boundary limits to the controller (workspace, velocity, torque, joint limits), enforced on the Control PC
 - [ ] Human collision test to verify compliance
   - Define the test protocol first (speeds, contact points, force thresholds)
   - Review against ISO/TS 15066 or equivalent guidance
   - Record force, torque, and stop-time data
+- [ ] Network fault tests: unplug the link, kill the VLA node, add latency; confirm safe behavior
 
 **Done when:** limits are enforced under fault injection, and collision tests pass the agreed thresholds with documented results.
 
@@ -138,24 +174,26 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 ## Stage 7: Optional (2-4 weeks)
 
 - [ ] Build a digital twin for the whole system
-- [ ] Simulator using ROS2 (Gazebo, Isaac Sim, or MuJoCo with a ROS2 bridge)
+- [ ] Simulator using ROS2 (Gazebo, Isaac Sim, or MuJoCo with a ROS2 bridge), running on the workstation
 
-**Benefits:** Safer testing of the VLA and compliance behavior; data collection; regression tests. Consider starting a basic simulator right after Stage 2 so Stages 4-5 can be tested virtually first.
+**Benefits:** Safer testing of the VLA and compliance behavior; data collection; regression tests. Consider starting a basic simulator right after Stage 2 so Stages 4-5 can be tested virtually first. The workstation/WSL2 side is a good fit for this.
 
 ---
 
-## Cross-cutting items (not yet in plan)
+## Cross-cutting items (not yet scheduled)
 
 - [ ] Safety: emergency stop, watchdog, safe start-up and shutdown
-- [ ] Version control, CI, and a reproducible environment (Docker or setup scripts)
+- [ ] Version control, CI, and a reproducible environment (Docker or setup scripts for both machines)
 - [ ] Data logging (rosbag2) for debugging and VLA fine-tuning
 - [ ] Documentation and demo video
 
 ## Open questions
 
+- Will IT approve a separate Control PC on an isolated network? If not, fallbacks: dual-boot/external SSD with Ubuntu RT, or a dedicated lab PC exception.
 - Which robotic device and motor drivers (affects EtherCAT master choice and torque sensing)?
 - Which VLA model, and will it be fine-tuned?
-- GPU available on the host PC, or a separate inference machine?
+- GPU specs on the workstation (VRAM for the chosen VLA)?
+- Are usbipd-win and WSL2 mirrored networking allowed by security policy?
 - Is there a hard deadline or demo date?
 
 ## Change log
@@ -163,3 +201,4 @@ Stage 3 is independent of stages 1-2, so with a second person (or by interleavin
 | Version | Date | Notes |
 |---------|------|-------|
 | 0.1 | 2026-10-07 | Initial plan with time estimates |
+| 0.2 | 2026-10-07 | Split architecture (RT Control PC + WSL2 workstation); added networking/DDS tasks, camera placement options, network fault tests; estimates +1 week (core 14-22 weeks) |
