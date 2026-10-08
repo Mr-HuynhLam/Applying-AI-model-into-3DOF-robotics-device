@@ -9,13 +9,13 @@ Because the office PC runs security software and WSL2 cannot provide hard real-t
 
 | Machine | OS | Role |
 |---------|----|------|
-| **Control PC** (dedicated mini/industrial PC) | Ubuntu LTS + PREEMPT_RT, dedicated NIC | EtherCAT master, ros2_control, kinematics, state estimation, compliance controller, safety limits |
-| **Workstation** (office PC, GPU) | Windows + WSL2 Ubuntu | VLA inference, camera processing, simulation / digital twin, development |
+| **Control PC** (dedicated mini/industrial PC) | Ubuntu 24.04 + PREEMPT_RT, dedicated NIC | EtherCAT master, ros2_control, kinematics, state estimation, compliance controller, safety limits |
+| **Workstation** (office PC, GPU) | Dual: Windows + Ubuntu 24.04 | VLA inference, camera processing, simulation / digital twin, development |
 
 The two machines communicate over ROS2 (DDS) on a wired network link. The fast loop (kHz) stays entirely on the Control PC; only slow, high-level data (images, VLA actions, torque summaries) crosses the network. The robot must stay safe if the network or the VLA node drops out.
 
 ```
-Workstation (WSL2)                     Control PC (RT Linux)
+ Workstation                            Control PC 
  Camera -> VLA node  --- ROS2/DDS --->  Compliance + position controller
  Simulator / twin    <-- (wired LAN) -- State, torque feedback
                                          |  EtherCAT (dedicated NIC)
@@ -54,8 +54,7 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 ## Stage 0: Communication setup (1-2 weeks)
 
 - [ ] Set up Control PC
-  - Install Ubuntu LTS with a PREEMPT_RT kernel
-  - Isolate CPU cores, set CPU governor to performance, disable power saving
+  - Install Ubuntu LTS
   - Dedicated NIC for EtherCAT (no other traffic on it)
   - Second NIC (or port) for the link to the workstation
 - [ ] Configure real-time EtherCAT communication
@@ -63,13 +62,13 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
   - Scan the bus, confirm slaves are detected and reach OP state
   - Measure cycle time jitter (e.g. cyclictest, target < 50 us at 1 kHz)
 - [ ] Set up workstation
-  - Enable WSL2 with Ubuntu, NVIDIA GPU driver + CUDA in WSL2
+  - Install dual OS with Ubuntu, NVIDIA GPU driver + CUDA in dual OS
   - Install ROS2 (same distro as Control PC)
   - Confirm with IT which tools are allowed (usbipd-win, WSL networking mode)
 
 **Done when:** the driver stays in OPERATIONAL state at the target cycle rate with stable jitter for 1+ hour, and the workstation has a working ROS2 + GPU environment.
 
-**Risks:** RT kernel and NIC driver compatibility; ESI/PDO mapping mismatches with the motor driver; corporate policy blocking WSL2 features.
+**Risks:** RT kernel and NIC driver compatibility; ESI/PDO mapping mismatches with the motor driver.
 
 ---
 
@@ -105,7 +104,7 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 ## Stage 3: Vision setup (1-2 weeks)
 
 - [ ] Decide where the camera connects
-  - Option A: workstation via usbipd-win (images stay next to the VLA, less network load)
+  - Option A: Workstation via usbipd-win (images stay next to the VLA, less network load)
   - Option B: Control PC, streaming compressed images over the LAN (use if USB passthrough is blocked by IT)
 - [ ] Set up camera (RGB-D)
 - [ ] Camera calibration
@@ -115,14 +114,14 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 
 **Done when:** a known object's position in the camera frame converts to the correct robot-frame position.
 
-**Risks:** Calibration accuracy; USB passthrough stability and bandwidth in WSL2; frame rate and timestamp sync with the robot.
+**Risks:** Calibration accuracy; USB passthrough stability and bandwidth; frame rate and timestamp sync with the robot.
 
 ---
 
 ## Stage 4: VLA integration (4-6 weeks)
 
 - [ ] Cross-machine ROS2 networking (new)
-  - Wired link between workstation and Control PC; WSL2 mirrored networking mode or bridged setup
+  - Wired link between workstation and Control PC.
   - Matching ROS_DOMAIN_ID, DDS choice (Cyclone DDS or Fast DDS) and discovery config; consider Zenoh if multicast is blocked
   - Time sync (chrony or PTP) so images, torque, and actions share timestamps
   - Measure round-trip latency and packet loss; define behavior on link loss
@@ -176,7 +175,7 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 - [ ] Build a digital twin for the whole system
 - [ ] Simulator using ROS2 (Gazebo, Isaac Sim, or MuJoCo with a ROS2 bridge), running on the workstation
 
-**Benefits:** Safer testing of the VLA and compliance behavior; data collection; regression tests. Consider starting a basic simulator right after Stage 2 so Stages 4-5 can be tested virtually first. The workstation/WSL2 side is a good fit for this.
+**Benefits:** Safer testing of the VLA and compliance behavior; data collection; regression tests. Consider starting a basic simulator right after Stage 2 so Stages 4-5 can be tested virtually first. The workstation side is a good fit for this.
 
 ---
 
@@ -193,7 +192,6 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 - Which robotic device and motor drivers (affects EtherCAT master choice and torque sensing)?
 - Which VLA model, and will it be fine-tuned?
 - GPU specs on the workstation (VRAM for the chosen VLA)?
-- Are usbipd-win and WSL2 mirrored networking allowed by security policy?
 - Is there a hard deadline or demo date?
 
 ## Change log
@@ -202,3 +200,4 @@ Change from v0.1: +1 week for two-machine setup (mostly Stage 4 networking and D
 |---------|------|-------|
 | 0.1 | 2026-10-07 | Initial plan with time estimates |
 | 0.2 | 2026-10-07 | Split architecture (RT Control PC + WSL2 workstation); added networking/DDS tasks, camera placement options, network fault tests; estimates +1 week (core 14-22 weeks) |
+| 0.3 | 2026-10-08 | Try to install Dual-boot on workstation PC instead of WSL2 for a stable simulation & training progress |
